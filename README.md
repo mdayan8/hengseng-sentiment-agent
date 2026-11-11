@@ -55,6 +55,28 @@ python main.py --offline  # reuse the last scraped data (no API calls)
 Outputs are written to `output/`: `report.html` (the visual report),
 `predictions.csv`, `forecast_metrics.csv`, plus the raw data CSVs.
 
+## Latest run (11 Nov 2026, live data)
+
+Everything in `output/` comes from a real run on 11 Nov 2026:
+
+- **71 social posts** kept after quality filtering (70 Telegram + 1 LIHKG)
+  plus **50 Exa news items** across the 5 stocks.
+- Predictions and out-of-sample metrics are in `output/report.html`.
+  Honest headline numbers: direction accuracy ranges from **36.6% (AIA,
+  worse than a coin flip) to 53.7% (China Mobile, Alibaba)** over 41
+  out-of-sample days each. MAPE runs from 1.1% to 7.0%.
+
+What the raw data looked like, honestly:
+
+- Telegram keyword search matches a lot of junk - a drama-upload channel
+  matched "Tencent" because Tencent Video makes the show. Every post is
+  kept only if its text mentions the company AND uses finance language
+  (see `FIN_TERMS` in `src/scrape_apify.py`), then deduplicated.
+- LIHKG search returned very little real finance discussion for these 5
+  keywords this week (most hits were entertainment news, filtered out).
+- China Mobile had **zero** usable social posts in the window; its signal
+  is news-only, and the report card says exactly that.
+
 ## Tokens used (for reproduction)
 
 - **Apify** (free plan): token in `.env` as `APIFY_TOKEN`
@@ -69,3 +91,7 @@ The actual token values are shared in the submission email, as requested.
 - Predictions are small-sample and noisy; the out-of-sample metrics in the
   report show exactly how well (or badly) the model did. Nothing is hidden.
 - Prices are daily bars, so "n+1" means the next trading day.
+- Sentiment is VADER plus a small finance word list, running on mostly
+  Cantonese text. VADER is an English model, so scores on Chinese posts
+  lean on the finance word list and are rough. Treat them as a signal,
+  not a measurement.

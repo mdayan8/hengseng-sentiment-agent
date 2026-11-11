@@ -1,7 +1,7 @@
 """Scrape social posts with Apify (sentiment source 1 and 2).
 
 Source 1: LIHKG   - Hong Kong's biggest retail-investor forum.
-Source 2: Telegram - public HK trading channels, keyword search.
+Source 2: Telegram - public HK channels, keyword search (HK region bias).
 
 Both are scraped through ready-made Apify actors. The actor IDs live in
 config.py, and we print the actor IDs we used because the employer asked
@@ -9,6 +9,14 @@ for them in the submission email (so they can reproduce the run).
 
 Every post is normalised to one simple shape:
     {source, ticker, time_utc, text, likes, reposts, views, followers, author}
+
+Two honest data-quality steps happen here, before anything reaches the model:
+  1. Keyword search on Telegram matches a lot of irrelevant channels (e.g. a
+     drama-upload channel whose episodes are produced by Tencent Video). A
+     post is only kept if its text actually mentions the company AND talks
+     in a finance context (see FIN_TERMS below).
+  2. Duplicate texts (re-uploaded episodes, reposted market wraps) are
+     dropped so one loud channel cannot dominate the sentiment score.
 """
 
 import os
@@ -18,6 +26,15 @@ import pandas as pd
 from apify_client import ApifyClient
 
 import config
+
+# Finance-context terms (English + Chinese). A post must mention the company
+# AND at least one of these, otherwise it is noise from keyword matching.
+FIN_TERMS = [
+    "stock", "share", "shares", "buy", "sell", "bull", "bear", "target",
+    "price", "earnings", "dividend", "market", "hang seng", "hsi",
+    "valuation", "rally", "crash", "investor", "hk$", "hkd",
+    "股", "買", "賣", "升", "跌", "牛市", "熊市", "恒指", "恆指", "股息", "成交",
+]
 
 
 def _client() -> ApifyClient:
@@ -43,6 +60,15 @@ def _normalise(item: dict, source: str, ticker: str) -> dict:
     text = first("text", "content", "title", "message", "body", default="")
     if first("title") and first("content"):
         text = f"{item['title']} {item['content']}"
+    author = first("author", "username", "user", "nickname", default="")
+    followers = first("followers", "follower_count", "authorFollowers", default=0) or 0
+    if source == "telegram":
+        # Telegram keyword search: the channel is the useful "author", and
+        # its subscriber count sits in a nested channel_info dict.
+        author = item.get("source_name") or author
+        info = item.get("channel_info") or {}
+        if isinstance(info, dict) and info.get("subscribers") is not None:
+            followers = info["subscribers"]
     return {
         "source": source,
         "ticker": ticker,
@@ -51,8 +77,8 @@ def _normalise(item: dict, source: str, ticker: str) -> dict:
         "likes": first("likes", "like_count", "likeCount", default=0) or 0,
         "reposts": first("reposts", "shares", "shareCount", default=0) or 0,
         "views": first("views", "view_count", "viewCount", "pageview", default=0) or 0,
-        "followers": first("followers", "follower_count", "authorFollowers", default=0) or 0,
-        "author": str(first("author", "username", "user", "nickname", default="")),
+        "followers": followers,
+        "author": str(author),
     }
 
 
@@ -65,6 +91,16 @@ def _run_actor(client, actor_id: str, run_input: dict) -> list:
     return items
 
 
+def _is_relevant(text: str, ticker_cfg: dict) -> bool:
+    """Keep a post only if it mentions the company in a finance context."""
+    t = text.lower()
+    company_pats = ([ticker_cfg["name"].lower(),
+                     ticker_cfg["ticker"].split(".")[0],
+                     ticker_cfg["cashtag"].lower()]
+                    + [k.lower() for k in ticker_cfg["keywords"]])
+    return any(p in t for p in company_pats) and any(f in t for f in FIN_TERMS)
+
+
 def scrape_lihkg(tickers=None, days: int = config.SOCIAL_DAYS) -> pd.DataFrame:
     """Search LIHKG for each ticker keyword, keep the last `days` days."""
     client = _client()
@@ -74,10 +110,12 @@ def scrape_lihkg(tickers=None, days: int = config.SOCIAL_DAYS) -> pd.DataFrame:
     for t in tickers:
         try:
             items = _run_actor(client, config.APIFY_LIHKG_ACTOR, {
+                "mode": "search",            # keyword search across thread titles/replies
                 "keywords": t["keywords"],
-                "dateFrom": cutoff.date().isoformat(),
+                "dateFrom": "2w",            # actor-side window; we re-filter to `days` below
+                "order": "desc_reply_time",  # freshest discussion first
                 "maxItems": 50,
-                "maxReplies": 20,   # include some replies: that is where sentiment lives
+                "maxReplies": 10,            # a few replies: that is where sentiment lives
             })
         except Exception as e:  # actor input schemas vary; fail soft, keep going
             print(f"     LIHKG actor failed for {t['ticker']}: {e}")
@@ -91,7 +129,7 @@ def scrape_lihkg(tickers=None, days: int = config.SOCIAL_DAYS) -> pd.DataFrame:
 
 
 def scrape_telegram(tickers=None, days: int = config.SOCIAL_DAYS) -> pd.DataFrame:
-    """Keyword-search public Telegram channels for each stock."""
+    """Keyword-search public Telegram channels for each stock (HK bias)."""
     client = _client()
     tickers = tickers or config.TICKERS
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
@@ -101,9 +139,10 @@ def scrape_telegram(tickers=None, days: int = config.SOCIAL_DAYS) -> pd.DataFram
         try:
             items = _run_actor(client, config.APIFY_TELEGRAM_ACTOR, {
                 "mode": "keyword",
-                "keywords": [f"{code} HK stock", f"{t['name']} stock"],
+                "keywords": [t["name"], t["keywords"][2], f"{code} HK"],
                 "afterDate": cutoff.date().isoformat(),
                 "maxResultsPerKeyword": 50,
+                "countryCode": "hk",       # bias search toward HK channels
             })
         except Exception as e:
             print(f"     Telegram actor failed for {t['ticker']}: {e}")
@@ -128,7 +167,7 @@ def _filter_recent(df: pd.DataFrame, cutoff: datetime) -> pd.DataFrame:
 
 
 def scrape_all() -> pd.DataFrame:
-    """Run both sources and stack the results."""
+    """Run both sources, filter for real finance chatter, stack the results."""
     parts = []
     print("Source 1: LIHKG")
     parts.append(scrape_lihkg())
@@ -138,5 +177,13 @@ def scrape_all() -> pd.DataFrame:
     if not parts:
         return pd.DataFrame()
     df = pd.concat(parts, ignore_index=True)
+    before = len(df)
+    df = df[df.apply(lambda r: _is_relevant(str(r["text"]),
+                     next(t for t in config.TICKERS if t["ticker"] == r["ticker"])), axis=1)]
+    print(f"Relevance filter: kept {len(df)}/{before} posts that mention the "
+          f"company in a finance context")
+    before = len(df)
+    df = df.drop_duplicates(subset=["text"]).reset_index(drop=True)
+    print(f"Dedupe: kept {len(df)}/{before} unique posts")
     print(f"Total social posts collected: {len(df)}")
     return df

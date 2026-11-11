@@ -86,8 +86,24 @@ def build_report(posts: pd.DataFrame, daily: pd.DataFrame,
                    .reset_index())
         summary = snapshot.merge(summary, on=["ticker", "asset_name"], how="left")
         summary[["mentions", "sentiment"]] = summary[["mentions", "sentiment"]].fillna(0)
-    summary["direction"] = summary["sentiment"].map(sent.direction)
+    # The cards should describe what the model actually saw: social posts
+    # PLUS news (both feed the daily features). Social counts come from
+    # `posts`; totals (social + news) come from `daily`.
+    if not daily.empty:
+        totals = (daily.groupby("ticker")
+                  .agg(total_mentions=("mentions", "sum"),
+                       model_sentiment=("sentiment_weighted", "mean"))
+                  .reset_index())
+        summary = summary.merge(totals, on="ticker", how="left")
+        summary[["total_mentions", "model_sentiment"]] = \
+            summary[["total_mentions", "model_sentiment"]].fillna(0)
+    else:
+        summary["total_mentions"] = summary["mentions"]
+        summary["model_sentiment"] = summary["sentiment"]
+    summary["news_mentions"] = (summary["total_mentions"] - summary["mentions"]).astype(int)
+    summary["direction"] = summary["model_sentiment"].map(sent.direction)
     summary["sentiment"] = summary["sentiment"].round(3)
+    summary["model_sentiment"] = summary["model_sentiment"].round(3)
     summary = summary.sort_values(["mentions", "sentiment"], ascending=False)
 
     rows = []
@@ -106,7 +122,7 @@ def build_report(posts: pd.DataFrame, daily: pd.DataFrame,
           <h2>{r['asset_name']} ({r['ticker']})</h2>
           <table>
             <tr><td>Current price</td><td>{r['current_price']} HKD</td></tr>
-            <tr><td>Sentiment</td><td>{r['sentiment']} ({r['direction']}), {int(r['mentions'])} mentions</td></tr>
+            <tr><td>Sentiment (social + news)</td><td>{r['model_sentiment']} ({r['direction']}), {int(r['mentions'])} social + {int(r['news_mentions'])} news mentions</td></tr>
             <tr><td>Support / resistance (20d)</td><td>{r['support']} / {r['resistance']} HKD</td></tr>
             <tr><td>Predicted next close (n+1)</td><td>{fc_html}</td></tr>
             <tr><td>Out-of-sample check</td><td>{mt_html}</td></tr>

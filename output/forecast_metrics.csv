@@ -1,0 +1,6 @@
+ticker,asset_name,oos_points,mae_hkd,mape_pct,direction_accuracy_pct
+0005.HK,HSBC,41,10.35,6.99,51.2
+0700.HK,Tencent,41,19.39,4.66,51.2
+0941.HK,China Mobile,41,0.86,1.08,53.7
+1299.HK,AIA,41,2.45,3.31,36.6
+9988.HK,Alibaba,41,6.29,6.0,53.7

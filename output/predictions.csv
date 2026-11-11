@@ -1,0 +1,6 @@
+ticker,asset_name,last_close,predicted_next_close,predicted_move_pct,predicted_direction
+0005.HK,HSBC,141.1,140.72,-0.27,down
+0700.HK,Tencent,411.8,422.35,2.56,up
+0941.HK,China Mobile,81.15,81.47,0.4,up
+1299.HK,AIA,78.85,79.19,0.44,up
+9988.HK,Alibaba,100.6,96.15,-4.43,down
